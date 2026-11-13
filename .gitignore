@@ -1,0 +1,20 @@
+# Environments
+.env
+.venv/
+env/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Cache and Databases
+graph_cache.json
+*.db
+*.sqlite3
+chroma_db/
+
+# OS Files
+.DS_Store
+Thumbs.db

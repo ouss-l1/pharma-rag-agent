@@ -1,0 +1,249 @@
+{
+  "name": "qa pharma agent in slack workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": [
+          "any_event"
+        ],
+        "watchWorkspace": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [
+        -176,
+        32
+      ],
+      "id": "a4baf055-4411-444c-9b99-3c6d5cd89c51",
+      "name": "Slack Trigger",
+      "webhookId": "7220700a-3d92-4e03-a9da-095886793dec",
+      "credentials": {
+        "slackApi": {
+          "id": "3dDg3eWCd1mANPjB",
+          "name": "Slack account 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "caa6b301-7193-44c9-849c-f1b81ab95070",
+              "leftValue": "={{ $json.bot_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "e2d7e396-c9d2-4e17-b39e-2a1c39a6d67d",
+              "leftValue": "={{ $json.subtype }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "b3b198f4-8c10-495d-9bc4-4faedc17f228",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        48,
+        32
+      ],
+      "id": "0c7f7f04-74f1-4fed-bb51-ddb62b9608c2",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e2c5ce41-655c-4839-8246-148ceb3a4ada",
+              "name": "QUESTION",
+              "value": "={{ $json.text.replace(/<@[A-Z0-9]+>/g, '').trim() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        288,
+        16
+      ],
+      "id": "1072881f-aad0-4cc7-b5d7-c21ca4cc01a0",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/ask",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "= {{ JSON.stringify({ question: $('Slack Trigger').item.json.text.replace(/<@[A-Z0-9]+>/g, '').trim() }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        512,
+        16
+      ],
+      "id": "6dad9f00-1a20-44cd-839a-ec811adb8a61",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4ce2f2f4-9a6f-4a23-ae78-b021725d1c11",
+              "name": "REPLY",
+              "value": "=  {{ ($json.answer + ($json.sources?.length ? \"\\n\\n*Sources :* \" + $json.sources.join(\", \") : \"\")).replace(/\\*\\*/g, '*') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        736,
+        16
+      ],
+      "id": "46df08dc-8587-45e8-9218-50b7820f1031",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0CGWJYLK62",
+          "mode": "list",
+          "cachedResultName": "ask-pharma-agent"
+        },
+        "text": "={{ $('HTTP Request').item.json.answer }}\n***RISK LEVEL: {{ $('HTTP Request').item.json.risk }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        896,
+        16
+      ],
+      "id": "84434448-c965-4de5-9131-a8292475cd73",
+      "name": "Send a message2",
+      "webhookId": "00ae44d7-768e-44e5-9dea-384c2b1373c0",
+      "credentials": {
+        "slackApi": {
+          "id": "3dDg3eWCd1mANPjB",
+          "name": "Slack account 4"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Send a message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "4462f60c-77ab-4ee9-a31a-cc3e72d663f9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5a0e618e9009f616efdd7df71f23355f299eef29e73746a06946a72c08d5c803"
+  },
+  "nodeGroups": [],
+  "id": "Yexq6T66XNjd6Xuf",
+  "tags": []
+}

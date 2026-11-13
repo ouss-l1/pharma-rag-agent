@@ -1,0 +1,172 @@
+{
+  "name": "risk pharma agent message workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pharma-risk",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        512,
+        -48
+      ],
+      "id": "a8c4a80e-e660-4d60-88ff-17525b651caa",
+      "name": "Webhook",
+      "webhookId": "c8bc8240-95e2-4508-8e08-927f7e832bca"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "5d230a50-c9c4-421f-ac3a-bac50f6c8f0a",
+              "leftValue": "={{ $json.body.risk }}",
+              "rightValue": "high",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        736,
+        -48
+      ],
+      "id": "30f075cb-d77a-4851-9293-6c8d688ac79d",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-5.6-terra",
+          "mode": "list",
+          "cachedResultName": "GPT-5.6-TERRA"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "assistant",
+              "content": "You are a risk-management assistant for a pharmacology question-answering system.\nYou receive a question, the critic's review of the system's draft answer, and the\nsource files used. Your job is to help a human reviewer decide quickly what to check.\n\nRules:\n- Do not give medical advice and do not answer the pharmacology question yourself.\n- Use only the information provided. Do not invent facts.\n- Be short and clear.\n\nWrite exactly this format:\nQUESTION: A patient currently on warfarin is prescribed sertraline. What is the risk of bleeding and what monitoring is recommended? or others depending on the prompt\n\nANSWER: - **Bleeding risk:** Sertraline can increase bleeding risk because drugs that interfere with serotonin reuptake increase bleeding events. Using sertraline with warfarin may further add to this risk. Reported events range from ecchymosis, hematoma, epistaxis, and petechiae to life-threatening hemorrhage; observational evidence also associates serotonin-reuptake inhibitors with gastrointestinal bleeding. (dailymed-sertraline.md)\\n\\n- **INR monitoring:** Carefully monitor the INR in patients taking warfarin who start sertraline. Warfarin labeling recommends **more frequent INR monitoring** when ano... or others depending on the prompt \n\nRISK LEVEL: Low, Medium or High\n\nWHY: 1-2 sentences explaining the main problem found by the critic\n\nWHAT TO CHECK: 2-3 bullet points the reviewer should verify in the source files "
+            },
+            {
+              "role": "system",
+              "content": "format output clearly - return in structure format"
+            },
+            {
+              "content": "=Question: \n{{ $json.body.question }}\n\nAnswer: \n{{ $json.body.answer }}\n\nCritical review:\n {{ $json.body.review }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        976,
+        -64
+      ],
+      "id": "dbefbe76-1ac8-4133-9c86-5d43ed16ebef",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": "WjtvZcVgRkVnSisW",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0CGWNH7F62",
+          "mode": "list",
+          "cachedResultName": "pharma-agent-risk1"
+        },
+        "text": "= {{ $json.output[0].content[0].text }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1344,
+        -64
+      ],
+      "id": "7440c05f-b550-43af-86b8-c53eca32c2b2",
+      "name": "Send a message",
+      "webhookId": "7cd720c1-934c-4f37-96c9-7a159d103a02",
+      "credentials": {
+        "slackApi": {
+          "id": "EOq1aWXkFbiedzfk",
+          "name": "Slack account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "be033d25-d5b4-4403-95cd-0e3124f8cb76",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5a0e618e9009f616efdd7df71f23355f299eef29e73746a06946a72c08d5c803"
+  },
+  "nodeGroups": [],
+  "id": "87DPLrOQOPbjjUiD",
+  "tags": []
+}

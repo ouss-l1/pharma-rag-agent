@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pharmacology AI Assistant</title>
+<!-- Google Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Marked.js for rendering markdown responses -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<style>
+  :root {
+    --bg: #ffffff;
+    --card-bg: #ffffff;
+    --card-border: #e2e8f0;
+    --primary: #0284c7;
+    --primary-hover: #0369a1;
+    --primary-glow: rgba(2, 132, 199, 0.2);
+    --text-bright: #0f172a;
+    --text-main: #334155;
+    --text-muted: #64748b;
+    --success-bg: #f0fdf4;
+    --success-border: #bbf7d0;
+    --success-text: #15803d;
+    --warning-bg: #fffbeb;
+    --warning-border: #fef08a;
+    --warning-text: #b45309;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+    background-color: var(--bg);
+    color: var(--text-main);
+    line-height: 1.6;
+    min-height: 100vh;
+    padding: 3rem 1rem;
+  }
+
+  .container {
+    max-width: 840px;
+    margin: 0 auto;
+  }
+
+  /* Header */
+  header {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+
+  header h1 {
+    font-size: 2.2rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+  }
+
+  header p {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    margin-top: 0.3rem;
+  }
+
+  /* Prompt Card */
+  .search-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 1.5rem;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 120px;
+    background: #f8fafc;
+    color: var(--text-bright);
+    padding: 1.1rem;
+    font-size: 1rem;
+    font-family: inherit;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    resize: vertical;
+    outline: none;
+    transition: all 0.2s ease;
+  }
+
+  textarea:focus {
+    background: #ffffff;
+    border-color: var(--primary);
+    box-shadow: 0 0 12px var(--primary-glow);
+  }
+
+  .action-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1rem;
+  }
+
+  .hint-text {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  button#send {
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 0.75rem 1.8rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  button#send:hover {
+    background: var(--primary-hover);
+    box-shadow: 0 4px 15px var(--primary-glow);
+  }
+
+  button#send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Loading state */
+  .status-box {
+    text-align: center;
+    padding: 2.5rem;
+    color: var(--text-muted);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    margin-top: 1.5rem;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 28px;
+    height: 28px;
+    border: 3px solid rgba(2, 132, 199, 0.2);
+    border-radius: 50%;
+    border-top-color: var(--primary);
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 0.75rem;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Output Card */
+  .result-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 1.75rem;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+    margin-top: 1.5rem;
+  }
+
+  .meta-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 1rem;
+    margin-bottom: 1.25rem;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .badge-risk {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.3rem 0.75rem;
+    border-radius: 20px;
+    text-transform: uppercase;
+  }
+
+  .badge-risk.low {
+    background: var(--success-bg);
+    border: 1px solid var(--success-border);
+    color: var(--success-text);
+  }
+
+  .badge-risk.high {
+    background: var(--warning-bg);
+    border: 1px solid var(--warning-border);
+    color: var(--warning-text);
+  }
+
+  .sources-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .source-pill {
+    background: #e0f2fe;
+    border: 1px solid #bae6fd;
+    color: #0369a1;
+    font-size: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 0.2rem 0.55rem;
+    border-radius: 6px;
+  }
+
+  .answer-content {
+    font-size: 1.05rem;
+    color: var(--text-main);
+    line-height: 1.7;
+  }
+
+  .answer-content p { margin-bottom: 0.85rem; }
+  .answer-content ul, .answer-content ol { margin-left: 1.4rem; margin-bottom: 0.85rem; }
+  .answer-content li { margin-bottom: 0.25rem; }
+  .answer-content strong { color: var(--text-bright); }
+  .answer-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  .answer-content th, .answer-content td {
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--card-border);
+    text-align: left;
+  }
+  .answer-content th { background: #f8fafc; color: var(--text-bright); }
+
+  details {
+    margin-top: 1.25rem;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    background: #f8fafc;
+    overflow: hidden;
+  }
+
+  summary {
+    padding: 0.75rem 1rem;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+  }
+
+  summary:hover { background: #f1f5f9; color: var(--text-bright); }
+
+  .details-body {
+    padding: 1rem;
+    font-size: 0.85rem;
+    background: #ffffff;
+    border-top: 1px solid var(--card-border);
+    white-space: pre-wrap;
+    font-family: 'JetBrains Mono', monospace;
+    color: #1e293b;
+  }
+
+  .hidden { display: none; }
+
+  .error-card {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+    padding: 1.25rem;
+    border-radius: 12px;
+    margin-top: 1.5rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>💊 Pharmacology Assistant</h1>
+    <p>Ask any clinical or drug question for evidence-backed answers</p>
+  </header>
+
+  <div class="search-card">
+    <textarea id="question" placeholder="Type your pharmacology question here..."></textarea>
+
+    <div class="action-row">
+      <span class="hint-text">Press <strong>Enter ↵</strong> to send • <strong>Shift + Enter</strong> for new line</span>
+      <button id="send">
+        <span>Send Question</span> ↵
+      </button>
+    </div>
+  </div>
+
+  <div id="status" class="status-box hidden">
+    <div class="spinner"></div>
+    <p>Analyzing question & searching documents...</p>
+  </div>
+
+  <div id="result" class="hidden"></div>
+</div>
+
+<script>
+const box = document.getElementById("question");
+const sendBtn = document.getElementById("send");
+const statusDiv = document.getElementById("status");
+const resultDiv = document.getElementById("result");
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;"
+}[c]));
+
+box.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    ask();
+  }
+});
+
+sendBtn.onclick = ask;
+
+async function ask() {
+  const question = box.value.trim();
+  if (!question) return;
+
+  sendBtn.disabled = true;
+  statusDiv.classList.remove("hidden");
+  resultDiv.classList.add("hidden");
+
+  try {
+    const res = await fetch("/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Server error");
+
+    renderResult(data);
+  } catch (err) {
+    resultDiv.className = "error-card";
+    resultDiv.innerHTML = `<strong>Error:</strong> ${esc(err.message)}`;
+    resultDiv.classList.remove("hidden");
+  } finally {
+    sendBtn.disabled = false;
+    statusDiv.classList.add("hidden");
+  }
+}
+
+function renderResult(d) {
+  const riskClass = d.risk === "high" ? "high" : "low";
+  const riskLabel = d.risk === "high" ? "⚠️ High Risk Review" : "✓ Verified";
+
+  const sourcesHtml = d.sources && d.sources.length
+    ? d.sources.map(s => `<span class="source-pill">${esc(s)}</span>`).join("")
+    : '<span style="font-size:0.8rem; color:var(--text-muted);">None</span>';
+
+  const formattedAnswer = typeof marked !== 'undefined' ? marked.parse(d.answer) : esc(d.answer);
+
+  resultDiv.className = "result-card";
+  resultDiv.innerHTML = `
+    <div class="meta-header">
+      <div class="sources-list">
+        <strong style="font-size:0.8rem; color:var(--text-bright); margin-right:0.3rem;">Sources:</strong>
+        ${sourcesHtml}
+      </div>
+      <span class="badge-risk ${riskClass}">${riskLabel}</span>
+    </div>
+
+    <div class="answer-content">${formattedAnswer}</div>
+
+    <details>
+      <summary>🔍 Agent Reasoning & Plan</summary>
+      <div class="details-body">${esc(d.plan)}</div>
+    </details>
+
+    <details>
+      <summary>🛡️ Safety & Critic Audit</summary>
+      <div class="details-body">${esc(d.review)}</div>
+    </details>
+  `;
+  resultDiv.classList.remove("hidden");
+}
+</script>
+</body>
+</html>
