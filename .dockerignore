@@ -19,5 +19,6 @@ history.db
 
 # Documentation & Workflows
 n8n_workflows/
+verification_work_photo/
 *.md
 !data/*.md
