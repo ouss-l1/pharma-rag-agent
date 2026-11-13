@@ -15,7 +15,6 @@ from app.risk import assess_risk, notify_n8n
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pharma-agent")
 
-MCP_CONNECT_RETRIES = 60
 MCP_RETRY_DELAY_S = 3
 
 
@@ -30,32 +29,38 @@ def _causes(exc: BaseException):
 
 
 async def connect_agent(app: FastAPI) -> None:
-    """Wait for the MCP server, load its tools, then build the agent.
+    """Wait (as long as needed) for the MCP server, load its tools, then build the agent.
 
     Runs in the background so /health answers immediately while the MCP
-    server is still loading the corpus.
+    server is still loading the corpus. It never gives up: the MCP server can
+    take several minutes to build its index and knowledge graph.
     """
     client = MultiServerMCPClient(
         {"pharma": {"transport": "streamable_http", "url": MCP_SERVER_URL}}
     )
-    for attempt in range(1, MCP_CONNECT_RETRIES + 1):
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             tools = await client.get_tools()
             app.state.agent = PharmaAgent(tools)
+            app.state.agent_error = None
             logger.info("Agent ready with %d MCP tools: %s",
                         len(tools), [t.name for t in tools])
             return
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             causes = " | ".join(repr(c) for c in _causes(e))
-            logger.info("Waiting for MCP server (%d/%d): %s",
-                        attempt, MCP_CONNECT_RETRIES, causes)
+            app.state.agent_error = f"MCP server still loading (attempt {attempt})"
+            if attempt % 5 == 1:
+                logger.info("Waiting for MCP server (attempt %d): %s", attempt, causes)
             await asyncio.sleep(MCP_RETRY_DELAY_S)
-    app.state.agent_error = f"MCP server unreachable at {MCP_SERVER_URL}"
-    logger.error(app.state.agent_error)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.agent_error = None
     app.state.evaluator = RAGEvaluator()
     task = asyncio.create_task(connect_agent(app))
     yield
@@ -94,7 +99,7 @@ def health() -> dict:
 @app.post("/ask", response_model=AskResponse)
 async def ask(request: AskRequest, background_tasks: BackgroundTasks) -> AskResponse:
     if not hasattr(app.state, "agent"):
-        detail = getattr(app.state, "agent_error", "Agent is starting, retry in a few seconds")
+        detail = getattr(app.state, "agent_error", None) or "Agent is starting, retry in a few seconds"
         raise HTTPException(status_code=503, detail=f"Agent not ready: {detail}")
 
     try:

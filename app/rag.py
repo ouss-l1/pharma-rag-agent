@@ -1,7 +1,9 @@
+import hashlib
 import re
+import shutil
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List
 
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import TextLoader
@@ -14,12 +16,12 @@ from langchain_text_splitters import (
     Language,
 )
 
-# Import standard d'EnsembleRetriever
-
+# Import standard d'EnsembleRetriever (paquet `langchain-classic` requis)
 from langchain_classic.retrievers.ensemble import EnsembleRetriever
 
 from app.config import (
     BM25_WEIGHT,
+    CACHE_DIR,
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     DENSE_WEIGHT,
@@ -32,6 +34,9 @@ from app.config import (
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*)")
 
+CHROMA_DIR = CACHE_DIR / "chroma"
+CHROMA_FINGERPRINT_FILE = CACHE_DIR / "chroma_fingerprint.txt"
+
 
 @lru_cache(maxsize=1)
 def get_embeddings():
@@ -40,6 +45,8 @@ def get_embeddings():
         api_key=OPENAI_API_KEY,
         base_url=OPENAI_BASE_URL,
         check_embedding_ctx_length=False,
+        chunk_size=16,  # smaller batches -> fewer 429 "Too Many Requests"
+        max_retries=8,
     )
 
 
@@ -47,6 +54,14 @@ def drug_name(path: Path) -> str:
     """Extract drug identifier from Markdown filename (e.g., 'dailymed-warfarin.md' -> 'warfarin')."""
     stem = path.stem.lower()
     return stem.split("-", 1)[1] if "-" in stem else stem
+
+
+def _chunks_fingerprint(chunks: List[Document]) -> str:
+    h = hashlib.sha256()
+    h.update(EMBEDDING_MODEL.encode("utf-8"))
+    for c in chunks:
+        h.update(c.page_content.encode("utf-8"))
+    return h.hexdigest()
 
 
 class KnowledgeBase:
@@ -84,10 +99,9 @@ class KnowledgeBase:
             drug = chunk.metadata.get("drug", "unknown")
             chunk.page_content = f"[Drug: {drug}]\n{chunk.page_content}"
 
-        # 3. Dense Index (Chroma Vector Store)
-        self.vectorstore = Chroma.from_documents(
-            documents=chunks, embedding=get_embeddings()
-        )
+        # 3. Dense Index (Chroma Vector Store), persisted on disk to avoid
+        #    re-computing every embedding at each start.
+        self.vectorstore = self._load_or_build_vectorstore(chunks)
         self.dense_retriever = self.vectorstore.as_retriever(
             search_type="similarity", search_kwargs={"k": TOP_K}
         )
@@ -103,6 +117,33 @@ class KnowledgeBase:
         )
 
         self.chunk_count = len(chunks)
+
+    def _load_or_build_vectorstore(self, chunks: List[Document]) -> Chroma:
+        fingerprint = _chunks_fingerprint(chunks)
+        try:
+            if (
+                CHROMA_DIR.exists()
+                and CHROMA_FINGERPRINT_FILE.exists()
+                and CHROMA_FINGERPRINT_FILE.read_text(encoding="utf-8").strip() == fingerprint
+            ):
+                store = Chroma(
+                    persist_directory=str(CHROMA_DIR),
+                    embedding_function=get_embeddings(),
+                )
+                if store._collection.count() == len(chunks):
+                    return store
+        except Exception:
+            pass  # unreadable cache -> rebuild below
+
+        shutil.rmtree(CHROMA_DIR, ignore_errors=True)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        store = Chroma.from_documents(
+            documents=chunks,
+            embedding=get_embeddings(),
+            persist_directory=str(CHROMA_DIR),
+        )
+        CHROMA_FINGERPRINT_FILE.write_text(fingerprint, encoding="utf-8")
+        return store
 
     def _split_documents(self, documents: List[Document]) -> List[Document]:
         if SPLIT_METHOD == "token":
