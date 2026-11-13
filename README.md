@@ -8,6 +8,39 @@ An evidence-backed pharmacology research assistant. It reads drug monographs wri
 
 ---
 
+## Quick Start (Docker)
+
+The API, the **MCP tool server** and the web UI run in **one container**:
+
+```bash
+docker build -t agent .
+docker run -p 8000:8000 --env-file .env agent
+```
+
+`.env` needs at least `OPENAI_API_KEY`, plus `OPENAI_BASE_URL`, `OPENAI_MODEL` and `OPENAI_EMBEDDING_MODEL` when you use a LiteLLM / OpenAI-compatible proxy (template: `.env.example`, details in [Section 7](#7-configuration-env)).
+
+| Check | Command | Expected |
+|---|---|---|
+| Liveness | `curl http://localhost:8000/health` | `200` and `{"status":"ok","agent_ready":true}` |
+| Ask | `curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" -d '{"question":"What are the main contraindications for warfarin?"}'` | `200` with a cited answer |
+| Web UI | <http://localhost:8000> | Question box with example questions |
+
+PowerShell users: use `Invoke-RestMethod` as shown in [Section 16](#16-testing) (`curl` is an alias of `Invoke-WebRequest` there).
+
+> **Startup time.** When the container starts, the MCP server builds the embeddings, the BM25 index and the knowledge graph (typically tens of seconds). `GET /health` answers `200` immediately with `agent_ready: false`; `POST /ask` returns `503` until it becomes `true`. The web UI shows a banner and unlocks the Send button automatically.
+
+**Design in one glance**
+
+- **Plan → Retrieve → Use tools → Review → Answer**: Planner, ReAct agent, Critic, Finalizer (LangChain / LangGraph).
+- **Tools over MCP**: 6 retrieval tools served by an MCP server; the LLM chooses which to call, nothing is hardcoded.
+- **Retrieval**: in-memory hybrid search (BM25 + Chroma dense vectors, fused by RRF) and a dynamic knowledge graph (NetworkX).
+- **Output**: cited answer + explicit disclaimer; the Critic's verdict becomes a `low` / `high` risk flag.
+- **Optional extra**: Slack + n8n automation (risk alerts, Slack Q&A), see Sections 9 to 14.
+
+---
+
+**Reviewers:** jump to [Quick Start (Docker)](#quick-start-docker) · [How the Agent Works](#5-how-the-agent-works) · [Testing](#16-testing).
+
 ## Table of Contents
 
 1. [Key Features](#1-key-features)
@@ -41,6 +74,8 @@ An evidence-backed pharmacology research assistant. It reads drug monographs wri
 | **Hybrid search** | BM25 (keyword) + ChromaDB (dense embeddings) merged by weighted Reciprocal Rank Fusion. |
 | **Dynamic GraphRAG** | An LLM extracts clinical triples (`CONTRAINDICATED_WITH`, `INTERACTS_WITH`, `CAUSES_SIDE_EFFECT`, `DOSAGE_RULE`) into an in-memory NetworkX graph at startup. |
 | **Multi-agent governance** | Planner → ReAct agent → Critic → Finalizer. |
+| **MCP tool server** | The 6 retrieval tools are served over the Model Context Protocol (streamable HTTP) and discovered by the agent at startup. |
+| **Docker-ready** | One container (API + MCP server + web UI) with `GET /health` and `POST /ask`. |
 | **Citations** | Every claim must cite its source file in parentheses. |
 | **Risk alerts** | If the Critic returns `VERDICT: REVISE`, the request is flagged `high` risk and an alert is posted to Slack through n8n. |
 | **Dual entry** | Ask from the Web UI or directly from Slack. |
@@ -72,7 +107,7 @@ The system has **two entry points** (Web UI and Slack) that both end up in the s
        ┌─────────────────────────────────────────────────────────────────┐
        │                    FastAPI Agent Engine (:8000)                 │
        │   Planner → ReAct Agent → Critic → Finalizer                    │
-       │   Tools: Hybrid RAG (BM25 + Chroma) · Knowledge Graph · Glossary│
+       │   Tools via MCP client → MCP Tool Server (:8001, internal)      │
        └───────┬─────────────────────────────────────────────┬───────────┘
                │ 4a. JSON answer (immediate)                 │ 4b. Background task
                ▼                                             ▼
@@ -92,15 +127,33 @@ The system has **two entry points** (Web UI and Slack) that both end up in the s
 
 | Component | Role |
 |---|---|
-| **FastAPI** | HTTP API (`/ask`, `/eval`, `/health`, `/`) and orchestration of all Python modules. |
-| **Knowledge Base (`rag.py`)** | Loads `.md` files, chunks them, builds BM25 + Chroma indexes, exposes search/section/glossary helpers. |
-| **GraphRAG engine (`graph_rag.py`)** | Builds and queries the NetworkX knowledge graph. |
-| **Agent (`agent.py`)** | LangChain/LangGraph multi-step reasoning with tools, review and finalization. |
+| **FastAPI** | HTTP API (`/ask`, `/eval`, `/health`, `/`). Hosts the agent, which acts as an **MCP client**. |
+| **Knowledge Base (`rag.py`)** | Loads `.md` files, chunks them, builds BM25 + Chroma indexes, exposes search/section/glossary helpers. Runs inside the MCP server process. |
+| **GraphRAG engine (`graph_rag.py`)** | Builds and queries the NetworkX knowledge graph. Runs inside the MCP server process. |
+| **Agent (`agent.py`)** | LangChain/LangGraph multi-step reasoning with the tools discovered from the MCP server, then review and finalization. |
+| **MCP server (`mcp_server.py`)** | Builds the knowledge base and graph once, and exposes the 6 tools over streamable HTTP on `127.0.0.1:8001/mcp`. |
 | **Risk module (`risk.py`)** | Converts the Critic's verdict into `low`/`high` and sends the event to n8n. |
 | **n8n Workflow 1** | Slack message → `POST /ask` → reply in Slack. |
 | **n8n Workflow 2** | Receives risk events → filters high risk → formats an alert with an LLM → posts to Slack. |
 | **Tunnel** | Gives Slack a public HTTPS URL that reaches your local n8n. |
 | **Slack App** | Identity, permissions and event subscriptions for the bot. |
+
+### Inside the `agent` container
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ Container `agent`   (docker run -p 8000:8000 --env-file .env agent)│
+│                                                                    │
+│ uvicorn app.main:app  →  0.0.0.0:8000  (the only published port)   │
+│   ├─ GET /health · GET / (web UI) · POST /ask · POST /eval         │
+│   └─ PharmaAgent = MCP client (langchain-mcp-adapters)             │
+│            │  MCP over streamable HTTP                             │
+│            ▼  http://127.0.0.1:8001/mcp                            │
+│ python -m app.mcp_server  →  127.0.0.1:8001  (internal only)       │
+│   ├─ KnowledgeBase: BM25 + Chroma (in-memory) + glossary + sections│
+│   └─ GraphRAGEngine: NetworkX triples extracted by the LLM         │
+└────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -117,6 +170,8 @@ The system has **two entry points** (Web UI and Slack) that both end up in the s
 | **python-dotenv** | Loads the `.env` file into environment variables (`config.py`). |
 | **LangChain** (`langchain`, `langchain-core`, `langchain-openai`, `langchain-community`, `langchain-text-splitters`, `langchain-chroma`, `langchain-classic`) | Prompt templates, LLM wrappers, document loaders, text splitters, retrievers, tools and agent creation. |
 | **LangGraph** | Execution engine behind the ReAct-style agent (tool-calling loop with a recursion limit). |
+| **MCP Python SDK (`mcp`, `FastMCP`)** | Declares the 6 tools in `app/mcp_server.py` and serves them over streamable HTTP (`/mcp`). |
+| **langchain-mcp-adapters** | `MultiServerMCPClient` connects to the MCP server and converts MCP tools into LangChain tools for the agent. |
 | **OpenAI-compatible API** | Chat model + embedding model. Any provider exposing the OpenAI protocol works through `OPENAI_BASE_URL`. |
 | **ChromaDB** | Vector store for dense (semantic) retrieval. Currently in-memory and rebuilt at each startup. |
 | **rank_bm25 (BM25Retriever)** | Sparse keyword retrieval, ideal for exact drug names and dosages. |
@@ -130,7 +185,7 @@ The system has **two entry points** (Web UI and Slack) that both end up in the s
 | Tool | Why it is used here |
 |---|---|
 | **n8n** | Low-code automation engine. Receives Slack events, calls the agent, and publishes risk alerts. |
-| **Docker** | Runs n8n in an isolated container with a persistent data volume. |
+| **Docker** | Packages the API, the MCP server and the web UI (`Dockerfile`), and runs n8n with a persistent data volume. |
 | **Cloudflare Tunnel (`cloudflared`)** | Creates a public HTTPS URL pointing at `localhost:5678` so Slack can reach n8n. |
 | **Ngrok** *(alternative)* | Same purpose; the free plan offers a stable static domain. |
 | **Slack App** | Bot user, scopes, event subscriptions. |
@@ -143,11 +198,12 @@ The system has **two entry points** (Web UI and Slack) that both end up in the s
 .
 ├── app/
 │   ├── __init__.py
-│   ├── agent.py          # Planner, ReAct agent (6 tools), Critic, Finalizer
+│   ├── agent.py          # Planner, ReAct agent (MCP client), Critic, Finalizer
 │   ├── config.py         # Environment variables & tuning constants
 │   ├── eval.py           # RAGEvaluator: faithfulness, context precision, string similarity
 │   ├── graph_rag.py      # NetworkX GraphRAG: triple extraction & graph queries
-│   ├── main.py           # FastAPI app: /ask, /eval, /health, /
+│   ├── main.py           # FastAPI app: /ask, /eval, /health, /; connects to the MCP server
+│   ├── mcp_server.py     # MCP tool server: 6 tools over streamable HTTP
 │   ├── rag.py            # KnowledgeBase: loading, chunking, BM25 + Chroma + hybrid
 │   └── risk.py           # assess_risk() and notify_n8n()
 ├── data/                 # Markdown corpus
@@ -158,10 +214,12 @@ The system has **two entry points** (Web UI and Slack) that both end up in the s
 │   └── pharma_risk_alerts_workflow.json
 ├── static/
 │   └── index.html        # Web UI
-├── docker-compose.yml    # Optional: multi-container setup
-├── Dockerfile            # Optional: container image for the API
-├── requirements.txt
-├── .env                  # Secrets (never commit)
+├── Dockerfile            # API + MCP server + UI in one container (required deliverable)
+├── .dockerignore
+├── requirements.txt      # Pinned dependencies
+├── .env.example          # Template; copy to .env (never commit the real .env)
+├── .gitignore
+├── <AI config files>     # Skills / MCP config / rules used while coding, committed on purpose
 └── README.md
 ```
 
@@ -181,8 +239,8 @@ Question
 │ Planner  │───────────────────────────────┐
 └──────────┘                               ▼
                                    ┌────────────────┐   tool calls   ┌───────────────┐
-                                   │  ReAct Agent   │◄──────────────►│ 6 retrieval   │
-                                   │ (draft answer) │                │ tools         │
+                                   │  ReAct Agent   │◄──────────────►│ 6 MCP tools   │
+                                   │ (draft answer) │                │ (MCP server)  │
                                    └───────┬────────┘                └───────────────┘
                                            │ draft + collected evidence
                                            ▼
@@ -198,14 +256,14 @@ Question
 ```
 
 1. **Planner**: breaks the question into 2–5 short steps naming the drug(s).
-2. **ReAct agent**: follows the plan and calls tools. It is instructed to use **only** tool output, never outside knowledge, and to retrieve each drug separately for comparisons.
+2. **ReAct agent**: follows the plan and chooses which MCP tools to call (the LLM decides, tool choice is not hardcoded). It is instructed to use **only** tool output, never outside knowledge, and to retrieve each drug separately for comparisons.
 3. **Evidence collection**: all tool outputs are concatenated and truncated to `MAX_EVIDENCE_CHARS` (20 000).
 4. **Sources**: extracted from the evidence with the pattern `[file.md]`.
 5. **Critic**: compares the draft with the evidence and returns a structured review.
 6. **Finalizer**: rewrites the draft (removes unsupported claims, adds missing points, flags ambiguity) and appends the disclaimer.
 7. **Risk**: `high` if the review contains `VERDICT: REVISE`, otherwise `low`.
 
-### 5.2 Agent tools
+### 5.2 Agent tools (served by the MCP server)
 
 | Tool | Purpose |
 |---|---|
@@ -237,6 +295,27 @@ At startup, each raw Markdown document that contains one of the keywords *contra
 | `RECURSION_LIMIT` | 30 | Max agent steps. |
 | `MAX_EVIDENCE_CHARS` | 20000 | Evidence sent to Critic/Finalizer. |
 
+### 5.5 The MCP layer
+
+The retrieval tools live in their own process (`app/mcp_server.py`) and are exposed with the **Model Context Protocol**. The agent never imports the knowledge base: at startup `app/main.py` connects with `MultiServerMCPClient`, calls `get_tools()` (MCP `tools/list`) and hands the discovered tools to the ReAct agent. At each step the LLM decides which tool to call.
+
+| Design choice | Reason |
+|---|---|
+| Separate MCP process | The corpus, embeddings, BM25 index and knowledge graph are built **once**, and any MCP client (Claude Desktop, Cursor, the MCP Inspector…) can reuse the same tools without touching the agent code. |
+| `streamable_http` transport, not `stdio` | `langchain-mcp-adapters` opens a new session per tool call by default. With `stdio` that would respawn the server, and rebuild the indexes, on every call. |
+| Bound to `127.0.0.1:8001` | The tool server is internal; Docker publishes only port 8000. |
+| Background connection with retries | `/health` answers immediately while the MCP server loads the corpus; `/ask` returns `503` until the agent is built. |
+| Async pipeline | MCP tools are async, so the agent uses `ainvoke` end to end and `/ask` is an `async` endpoint. |
+| Same evidence format | Tools still return passages prefixed with `[file.md]`, so source extraction and citations are unchanged. |
+
+Inspect the tool server by hand (requires Node.js):
+
+```bash
+npx @modelcontextprotocol/inspector
+```
+
+Choose the **Streamable HTTP** transport and the URL `http://127.0.0.1:8001/mcp`.
+
 ---
 
 ## 6. Prerequisites
@@ -250,6 +329,7 @@ At startup, each raw Markdown document that contains one of the keywords *contra
 | Slack workspace | You need permission to create/install apps. |
 | LLM API key | OpenAI or any OpenAI-compatible provider. |
 | An OpenAI credential for n8n | Used by the "Message a model" node of the risk workflow. |
+| Node.js *(optional)* | Only to run the MCP Inspector (`npx @modelcontextprotocol/inspector`) when debugging the tool server. |
 
 Install on Windows (PowerShell):
 
@@ -293,10 +373,17 @@ OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 # Where FastAPI sends risk events (n8n Workflow 2, Webhook node, Production URL)
 N8N_WEBHOOK_URL=<n8n_risk_webhook_production_url>
 
+# MCP tool server (defaults are fine, also inside Docker)
+MCP_HOST=127.0.0.1
+MCP_PORT=8001
+# MCP_SERVER_URL=http://127.0.0.1:8001/mcp
+
 # Corpus & chunking
 DATA_DIR=./data
 SPLIT_METHOD=markdown
 ```
+
+A template without secrets is provided as `.env.example`. For `docker run --env-file`, write values **without quotes** and without `export`.
 
 | Variable | Required | Description |
 |---|---|---|
@@ -307,14 +394,18 @@ SPLIT_METHOD=markdown
 | `N8N_WEBHOOK_URL` | ➖ | If empty, risk alerts are silently disabled. |
 | `DATA_DIR` | ➖ | Folder containing the `.md` files. |
 | `SPLIT_METHOD` | ➖ | `markdown`, `token`, `recursive`. |
+| `MCP_HOST` / `MCP_PORT` | ➖ | Address the MCP server listens on (default `127.0.0.1:8001`). |
+| `MCP_SERVER_URL` | ➖ | URL the API uses to reach the MCP server (default `http://127.0.0.1:8001/mcp`). |
 
-**Choosing `N8N_WEBHOOK_URL`.** FastAPI runs on your machine and n8n's port is published on `localhost:5678`, so the simplest value is the local one:
+**Choosing `N8N_WEBHOOK_URL`.** The right value depends on where the API runs, because `localhost` means "this machine or container":
 
-```
-http://localhost:5678/webhook/<risk-webhook-path>
-```
+| Where the API runs | `N8N_WEBHOOK_URL` |
+|---|---|
+| Directly on your machine (`uvicorn`) | `http://localhost:5678/webhook/<risk-webhook-path>` |
+| In the `agent` Docker container (n8n published on the host) | `http://host.docker.internal:5678/webhook/<risk-webhook-path>` |
+| Anywhere, through the public tunnel | `<PUBLIC_TUNNEL_URL>/webhook/<risk-webhook-path>` (changes on every quick-tunnel restart) |
 
-A public tunnel URL also works, but it changes on every restart (quick tunnels) and adds an unnecessary network hop.
+If the variable is empty, risk alerts are skipped and `/ask` is unaffected, so reviewers do not need n8n.
 
 > Use the **Production URL** (`/webhook/...`) for a published workflow. The **Test URL** (`/webhook-test/...`) only works while the editor is listening for a test event.
 
@@ -338,7 +429,10 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-# 5. Start the API
+# 5a. Terminal 1: start the MCP tool server (loads corpus, embeddings, graph)
+python -m app.mcp_server
+
+# 5b. Terminal 2 (venv active): start the API
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -352,12 +446,21 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `--reload` | Auto-restart on file changes (development only). |
 | `--host 0.0.0.0` | Listen on all interfaces (required so Docker containers can reach it). |
 | `--port 8000` | HTTP port. |
+| `python -m app.mcp_server` | Runs the MCP tool server (streamable HTTP on `127.0.0.1:8001`, endpoint `/mcp`). |
 
-On startup the app loads the corpus, creates embeddings, builds the BM25 index, extracts the graph with the LLM, and logs:
+The **MCP server** loads the corpus, creates embeddings, builds the BM25 index and extracts the graph with the LLM, then logs:
 
 ```
-Markdown Hybrid Agent Ready: N chunks & M graph edges indexed
+MCP server ready: N chunks & M graph edges indexed
 ```
+
+The **API** starts immediately, connects to the MCP server in the background (retrying every 3 s), and logs:
+
+```
+Agent ready with 6 MCP tools: ['search_hybrid', ...]
+```
+
+The start order does not matter. To run everything in a container instead, see [Quick Start](#quick-start-docker).
 
 Open:
 
@@ -417,7 +520,7 @@ Inside the n8n container `localhost` means the container itself, not your PC. Us
 
 | Where FastAPI runs | URL for the HTTP Request node |
 |---|---|
-| On your host (Docker Desktop, Windows/macOS) | `http://host.docker.internal:8000/ask` |
+| On your host, or in the `agent` container started with `-p 8000:8000` (Docker Desktop, Windows/macOS) | `http://host.docker.internal:8000/ask` |
 | On your host (Linux) | add `--add-host=host.docker.internal:host-gateway` to `docker run`, then use the same URL |
 | In another container (Compose) | `http://<service_name>:8000/ask` |
 
@@ -648,13 +751,15 @@ The event is posted for **every** question; the **If** node decides whether an a
    ```
    Copy the public URL.
 2. **n8n** (terminal 2): `docker run … -e WEBHOOK_URL=<PUBLIC_TUNNEL_URL> …` (see [Section 9](#9-running-n8n-with-docker-command-reference)).
-3. **Backend** (terminal 3, venv active):
+3. **MCP tool server** (terminal 3, venv active): `python -m app.mcp_server`
+4. **API** (terminal 4, venv active):
    ```powershell
    python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
-4. In n8n: select credentials, **Publish** both workflows, copy the risk webhook Production URL into `.env` (`N8N_WEBHOOK_URL`) and restart the backend if you changed it.
-5. In Slack: paste the Slack Trigger Production URL into **Event Subscriptions** (only needed when the tunnel URL changed).
-6. Test from the Web UI, then from Slack.
+   (or skip steps 3 and 4 and run `docker run -p 8000:8000 --env-file .env agent`)
+5. In n8n: select credentials, **Publish** both workflows, copy the risk webhook Production URL into `.env` (`N8N_WEBHOOK_URL`) and restart the backend if you changed it.
+6. In Slack: paste the Slack Trigger Production URL into **Event Subscriptions** (only needed when the tunnel URL changed).
+7. Test from the Web UI, then from Slack.
 
 Shutdown: `Ctrl+C` in the tunnel/backend terminals and `docker stop n8n`.
 
@@ -664,9 +769,13 @@ Shutdown: `Ctrl+C` in the tunnel/backend terminals and `docker stop n8n`.
 
 ### `GET /health`
 
+Always `200` as soon as the API process is up.
+
 ```json
-{ "status": "ok" }
+{ "status": "ok", "agent_ready": true }
 ```
+
+`agent_ready` is `false` while the MCP server is still loading the corpus.
 
 ### `POST /ask`
 
@@ -688,7 +797,7 @@ Response `200`:
 }
 ```
 
-Errors: `503` agent not initialized (check startup logs), `500` error while answering.
+Errors: `503` agent not ready (still starting, or the MCP server is unreachable; the message says which), `500` error while answering, `422` invalid body.
 
 ### `POST /eval`
 
@@ -710,6 +819,19 @@ Errors: `503` agent not initialized (check startup logs), `500` error while answ
 ---
 
 ## 16. Testing
+
+### 16.1 Public evaluation questions
+
+| # | Question | Expected sources |
+|---|---|---|
+| 1 | What are the main contraindications for warfarin? | `dailymed-warfarin.md` |
+| 2 | Compare the contraindications of warfarin and apixaban. What conditions are shared and which are unique to each drug? | `dailymed-warfarin.md`, `dailymed-apixaban.md` |
+| 3 | A patient currently on warfarin is prescribed sertraline. What is the risk of bleeding and what monitoring is recommended? | `dailymed-warfarin.md`, `dailymed-sertraline.md` |
+| 4 | A patient with an eGFR of 25 mL/min is being considered for metformin. Is metformin contraindicated at this level of renal function, and what is the threshold? | `dailymed-metformin.md` |
+
+For each question check that `sources` contains the expected files, that claims are cited inline, and that the answer ends with the disclaimer. The web UI offers these four questions as one-click examples.
+
+### 16.2 Manual API calls
 
 PowerShell:
 
@@ -748,7 +870,9 @@ Check each layer in this order: **API → n8n workflow 1 → Slack event → ris
 | Create venv | `py -3.11 -m venv .venv` |
 | Activate venv (PowerShell) | `.\.venv\Scripts\Activate.ps1` |
 | Install dependencies | `pip install -r requirements.txt` |
+| Start MCP tool server | `python -m app.mcp_server` |
 | Start API | `python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` |
+| Inspect MCP tools | `npx @modelcontextprotocol/inspector` (URL `http://127.0.0.1:8001/mcp`) |
 | Start tunnel | `cloudflared tunnel --url http://localhost:5678` |
 | Start n8n | `docker run -d --name n8n -p 5678:5678 -e WEBHOOK_URL=<PUBLIC_TUNNEL_URL> -e N8N_PROXY_HOPS=1 -v n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n` |
 | n8n logs | `docker logs -f n8n` |
@@ -756,7 +880,9 @@ Check each layer in this order: **API → n8n workflow 1 → Slack event → ris
 | Restart stopped n8n | `docker start n8n` |
 | Remove n8n container | `docker rm n8n` |
 | List containers | `docker ps` (running) / `docker ps -a` (all) |
-| Optional Compose stack | `docker compose up -d --build` / `docker compose down` |
+| Build the agent image | `docker build -t agent .` |
+| Run the agent container | `docker run -p 8000:8000 --env-file .env agent` |
+| Agent container logs | `docker logs -f <container_id>` |
 
 ---
 
@@ -772,7 +898,10 @@ Check each layer in this order: **API → n8n workflow 1 → Slack event → ris
 | `invalid_auth` / `token_revoked` | Wrong or regenerated token. Paste the current `xoxb-` token into the n8n credential. |
 | n8n HTTP Request: *ECONNREFUSED* on `localhost:8000` | `localhost` is the container. Use `host.docker.internal`. Also start Uvicorn with `--host 0.0.0.0`. |
 | n8n HTTP Request times out | Agent runs take a while; raise the node timeout. |
-| `503 Agent not ready` | Startup failed (bad API key, wrong base URL/model, embeddings unreachable, empty `data/`). Read the Uvicorn log. |
+| `503 Agent not ready: Agent is starting…` | Normal during the first tens of seconds. Wait until `GET /health` reports `agent_ready: true`. |
+| `503 Agent not ready: MCP server unreachable` | The MCP process is not running or crashed at startup (bad API key, wrong base URL/model, embeddings unreachable, empty `data/`). Run `python -m app.mcp_server` (or read the container logs) to see the error. |
+| `docker run` exits immediately or the API never becomes ready | Check `docker logs`. Common causes: missing `OPENAI_API_KEY`, quotes around values in `.env`, wrong `OPENAI_BASE_URL`. |
+| Risk alerts never arrive when the API runs in Docker | `N8N_WEBHOOK_URL` uses `localhost`, which is the container itself. Use `http://host.docker.internal:5678/webhook/<path>`. |
 | `No .md files found` | Check `DATA_DIR` and that files end with `.md`. |
 | Risk alerts never arrive | `N8N_WEBHOOK_URL` empty or pointing at the Test URL; risk workflow unpublished; or `risk` is `low`. |
 | Pydantic / type errors at import | You are using Python 3.14. Switch to 3.11 or 3.12. |
@@ -788,19 +917,28 @@ Check each layer in this order: **API → n8n workflow 1 → Slack event → ris
 - 🌐 Anyone who knows a public webhook URL can call it. Keep the Signing Secret configured and consider adding an authentication header to the n8n Webhook node.
 - 🧪 Quick tunnels are for development. Use a named tunnel or a proper domain for anything long-lived.
 - 🧱 Grant the Slack app only the scopes it needs.
+- 🔌 The MCP server has no authentication: keep it bound to `127.0.0.1` and never publish port 8001.
+- 📦 `.env` is excluded from the image by `.dockerignore`; secrets are injected at runtime with `--env-file`.
 - 🩺 Keep the disclaimer: outputs are not clinical advice.
 
 ---
 
 ## 20. Known Limitations
 
-- **In-memory indexes.** Chroma is not persisted, so embeddings and the knowledge graph are rebuilt (and LLM/embedding calls are billed) at every startup.
+- **In-memory indexes.** Chroma is not persisted, so the MCP server rebuilds the embeddings and the knowledge graph (and LLM/embedding calls are billed) every time it starts.
 - **No graph disk cache.** The graph lives only in memory; caching it to JSON would speed up restarts.
 - **Graph extraction granularity.** Triples are extracted per whole document and may be incomplete for long monographs.
 - **Cypher helper not wired.** `generate_few_shot_cypher()` exists in `graph_rag.py` but is not exposed as an agent tool, and the graph is queried by entity name, not by executing Cypher.
 - **`/eval` returns raw LLM text** for faithfulness and precision rather than parsed numbers.
 - **Latency.** Planner, agent, Critic and Finalizer are sequential LLM calls; answers take several seconds up to a couple of minutes.
+- **Two processes in one container.** The container starts the MCP server in the background; if it crashes, the API stays up but `/ask` fails until the container is restarted.
 - **Retrieval depth.** `TOP_K = 3` with 200-token chunks is deliberately narrow; increase it for broader recall.
+
+---
+
+## 🤖 AI-Assisted Development
+
+AI coding assistants were used to build this project, as the assignment allows. Every file in the repository has been reviewed and can be explained by the author. The AI coding configuration (skills, MCP config, rules files) is committed at the repository root on purpose.
 
 ---
 

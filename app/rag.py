@@ -79,6 +79,11 @@ class KnowledgeBase:
         # 2. Split Markdown using Markdown-aware or Token splitters
         chunks = self._split_documents(documents)
 
+        # Prefix every chunk with its drug so it is never "orphaned"
+        for chunk in chunks:
+            drug = chunk.metadata.get("drug", "unknown")
+            chunk.page_content = f"[Drug: {drug}]\n{chunk.page_content}"
+
         # 3. Dense Index (Chroma Vector Store)
         self.vectorstore = Chroma.from_documents(
             documents=chunks, embedding=get_embeddings()

@@ -1,45 +1,73 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel, Field
 
 from app.agent import PharmaAgent
-from app.config import DATA_DIR, STATIC_DIR
+from app.config import MCP_SERVER_URL, STATIC_DIR
 from app.eval import RAGEvaluator
-from app.graph_rag import GraphRAGEngine
-from app.rag import KnowledgeBase
 from app.risk import assess_risk, notify_n8n
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pharma-agent")
 
+MCP_CONNECT_RETRIES = 60
+MCP_RETRY_DELAY_S = 3
+
+
+def _causes(exc: BaseException):
+    """Déballe récursivement les ExceptionGroup."""
+    subs = getattr(exc, "exceptions", None)
+    if subs:
+        for s in subs:
+            yield from _causes(s)
+    else:
+        yield exc
+
+
+async def connect_agent(app: FastAPI) -> None:
+    """Wait for the MCP server, load its tools, then build the agent.
+
+    Runs in the background so /health answers immediately while the MCP
+    server is still loading the corpus.
+    """
+    client = MultiServerMCPClient(
+        {"pharma": {"transport": "streamable_http", "url": MCP_SERVER_URL}}
+    )
+    for attempt in range(1, MCP_CONNECT_RETRIES + 1):
+        try:
+            tools = await client.get_tools()
+            app.state.agent = PharmaAgent(tools)
+            logger.info("Agent ready with %d MCP tools: %s",
+                        len(tools), [t.name for t in tools])
+            return
+        except Exception as e:
+            causes = " | ".join(repr(c) for c in _causes(e))
+            logger.info("Waiting for MCP server (%d/%d): %s",
+                        attempt, MCP_CONNECT_RETRIES, causes)
+            await asyncio.sleep(MCP_RETRY_DELAY_S)
+    app.state.agent_error = f"MCP server unreachable at {MCP_SERVER_URL}"
+    logger.error(app.state.agent_error)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize Markdown Knowledge Base, Dynamic Graph Engine, Evaluator, and Agent."""
-    try:
-        kb = KnowledgeBase(DATA_DIR)
-        graph_engine = GraphRAGEngine(documents=kb.raw_documents)
-        app.state.evaluator = RAGEvaluator()
-        app.state.agent = PharmaAgent(kb, graph_engine)
-        logger.info(
-            "Markdown Hybrid Agent Ready: %d chunks & %d graph edges indexed", 
-            kb.chunk_count, 
-            graph_engine.graph.number_of_edges()
-        )
-    except Exception as e:
-        logger.exception("Could not initialize the agent")
-        app.state.agent_error = str(e)
+    app.state.evaluator = RAGEvaluator()
+    task = asyncio.create_task(connect_agent(app))
     yield
+    task.cancel()
 
 
-app = FastAPI(title="Pharmacology Research Agent (Markdown & Graph RAG)", lifespan=lifespan)
+app = FastAPI(title="Pharmacology Research Agent (MCP + Hybrid RAG + GraphRAG)",
+              lifespan=lifespan)
 
 
 class AskRequest(BaseModel):
-    # Set min_length=1 to accept single-character questions (e.g. "?", "a") while rejecting empty strings
+    # min_length=1 accepts single-character questions while rejecting empty strings
     question: str = Field(min_length=1, max_length=2000)
 
 
@@ -60,27 +88,25 @@ class EvalRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "agent_ready": hasattr(app.state, "agent")}
 
 
 @app.post("/ask", response_model=AskResponse)
-def ask(request: AskRequest, background_tasks: BackgroundTasks) -> AskResponse:
+async def ask(request: AskRequest, background_tasks: BackgroundTasks) -> AskResponse:
     if not hasattr(app.state, "agent"):
-        error_msg = getattr(app.state, "agent_error", "Unknown startup error")
-        raise HTTPException(status_code=503, detail=f"Agent not ready: {error_msg}")
-    
+        detail = getattr(app.state, "agent_error", "Agent is starting, retry in a few seconds")
+        raise HTTPException(status_code=503, detail=f"Agent not ready: {detail}")
+
     try:
-        result = app.state.agent.ask(request.question)
+        result = await app.state.agent.ask(request.question)
     except Exception as e:
         logger.exception("Error while answering")
         raise HTTPException(status_code=500, detail=f"Error while answering: {e}") from e
 
     result["risk"] = assess_risk(result["review"])
-    
-    background_tasks.add_task(
-        notify_n8n, {"question": request.question, **result}
-    )
-    
+
+    background_tasks.add_task(notify_n8n, {"question": request.question, **result})
+
     return AskResponse(
         answer=result["answer"],
         sources=result["sources"],
@@ -92,10 +118,14 @@ def ask(request: AskRequest, background_tasks: BackgroundTasks) -> AskResponse:
 
 @app.post("/eval")
 def evaluate_rag(request: EvalRequest) -> dict:
-    """RAG Evaluation Endpoint (Context Precision, Faithfulness, String Similarity)."""
+    """RAG Evaluation Endpoint (Context Precision, Faithfulness, String Similarity).
+
+    Declared with `def` on purpose: FastAPI runs it in a thread pool, so the
+    blocking LLM calls do not freeze the event loop.
+    """
     if not hasattr(app.state, "evaluator"):
         raise HTTPException(status_code=503, detail="Evaluator not initialized")
-    
+
     evaluator: RAGEvaluator = app.state.evaluator
     return evaluator.evaluate_rag_triplet(
         question=request.question,

@@ -15,10 +15,15 @@ CHAT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
 
-# Pure Markdown RAG Chunking Settings (200 tokens chunk / 40 overlap for high medical density)
-CHUNK_SIZE = 200
-CHUNK_OVERLAP = 40
-TOP_K = 3
+# MCP server (tools) settings
+MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
+MCP_PORT = int(os.getenv("MCP_PORT", "8001"))
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", f"http://{MCP_HOST}:{MCP_PORT}/mcp")
+
+# Markdown RAG chunking settings (sizes are in CHARACTERS, not tokens)
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 150
+TOP_K = 5
 SPLIT_METHOD = os.getenv("SPLIT_METHOD", "markdown")  # Options: 'markdown', 'token', 'recursive'
 
 # Hybrid Search RRF Weights (BM25 Sparse + Chroma Dense)
@@ -27,7 +32,7 @@ DENSE_WEIGHT = 0.6
 
 # Agent Execution Limits
 RECURSION_LIMIT = 30
-MAX_EVIDENCE_CHARS = 20000
+MAX_EVIDENCE_CHARS = 40000
 
 DISCLAIMER = (
     "Disclaimer: this answer is a technical exercise based only on the provided documents. "

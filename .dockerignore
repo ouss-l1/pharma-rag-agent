@@ -1,7 +1,10 @@
-.env
+.venv/
 __pycache__/
 *.pyc
-.venv/
-venv/
-*.db
-.DS_Store
+.env
+.git/
+.gitignore
+n8n_workflows/
+history.db
+*.md
+!data/*.md

@@ -1,20 +1,29 @@
-# Environments
+# Environments & secrets
 .env
+.env.*
+!.env.example
 .venv/
 env/
 venv/
-
+ 
 # Python
 __pycache__/
-*.pyc
-*.pyo
-
-# Cache and Databases
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+ 
+# Runtime caches and databases
 graph_cache.json
 *.db
 *.sqlite3
 chroma_db/
-
-# OS Files
+ 
+# Logs
+*.log
+ 
+# OS / editor files
 .DS_Store
 Thumbs.db
+.idea/

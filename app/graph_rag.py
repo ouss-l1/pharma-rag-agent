@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Dict, Any, List
 import networkx as nx
@@ -9,6 +10,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from app.config import CHAT_MODEL, OPENAI_API_KEY, OPENAI_BASE_URL
 
+logger = logging.getLogger("pharma-mcp")
 
 class KnowledgeTriple(BaseModel):
     subject: str = Field(description="Source drug or molecule, e.g., Warfarin, Metformin")
@@ -58,7 +60,7 @@ class GraphRAGEngine:
     """Dynamic Knowledge Graph engine that extracts triples automatically from Markdown documents."""
 
     def __init__(self, documents: List[Document] = None):
-        self.graph = nx.DiGraph()
+        self.graph = nx.MultiDiGraph()
         self.llm = ChatOpenAI(
             model=CHAT_MODEL,
             temperature=0,
@@ -75,14 +77,16 @@ class GraphRAGEngine:
         structured_llm = self.llm.with_structured_output(DocumentTriples)
         extractor_chain = TRIPLE_EXTRACTION_PROMPT | structured_llm
 
-        for doc in documents:
+        total = len(documents)
+        for i, doc in enumerate(documents, 1):
             source_file = doc.metadata.get("source", "unknown.md")
+            logger.info("Graph: document %d/%d (%s)", i, total, source_file)
             if any(kw in doc.page_content.lower() for kw in ["contraindication", "interaction", "warning", "adverse"]):
                 try:
                     res: DocumentTriples = extractor_chain.invoke({"text": doc.page_content})
                     for t in res.triples:
-                        src = t.subject.strip().title()
-                        dst = t.object.strip().title()
+                        src = t.subject.strip()
+                        dst = t.object.strip()
                         self.graph.add_edge(
                             src,
                             dst,
@@ -90,35 +94,29 @@ class GraphRAGEngine:
                             effect=t.effect,
                             source=source_file
                         )
-                except Exception:
+                except Exception as e:
+                    logger.warning("Triple extraction failed for %s: %r", source_file, e)
                     continue
 
     def query_graph_relations(self, entity: str) -> str:
-        """Retrieves exact graph edges and relational links for an entity."""
-        entity_clean = entity.strip().title()
-        results = []
+        """Retrieves graph edges where the entity is subject or object (partial, case-insensitive match)."""
+        needle = entity.strip().lower()
+        if not needle:
+            return "Empty entity."
 
-        if self.graph.has_node(entity_clean):
-            for neighbor in self.graph.neighbors(entity_clean):
-                edge_data = self.graph.get_edge_data(entity_clean, neighbor)
-                rel = edge_data.get("relation", "RELATED_TO")
-                src = edge_data.get("source", "dailymed-notice.md")
-                eff = edge_data.get("effect", "")
-                eff_str = f" ({eff})" if eff else ""
-                results.append(f"({entity_clean}) -[{rel}]-> ({neighbor}){eff_str} [{src}]")
-
+        results = set()
         for u, v, data in self.graph.edges(data=True):
-            if v.lower() == entity.lower():
-                rel = data.get("relation", "RELATED_TO")
-                src = data.get("source", "dailymed-notice.md")
+            if needle in u.lower() or needle in v.lower():
                 eff = data.get("effect", "")
                 eff_str = f" ({eff})" if eff else ""
-                results.append(f"({u}) -[{rel}]-> ({v}){eff_str} [{src}]")
+                rel = data.get("relation", "RELATED_TO")
+                src = data.get("source", "unknown.md")
+                results.add(f"({u}) -[{rel}]-> ({v}){eff_str} [{src}]")
 
         if not results:
             return f"No direct graph relationships found for '{entity}' in the corpus."
 
-        return "Graph RAG Results:\n" + "\n".join(results)
+        return "Graph RAG Results:\n" + "\n".join(sorted(results))
 
     def validate_cypher(self, cypher_query: str) -> bool:
         """Validates generated Cypher queries against destructive operations."""
