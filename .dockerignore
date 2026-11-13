@@ -1,10 +1,23 @@
+# Environments & Secrets
 .venv/
-__pycache__/
-*.pyc
 .env
+
+# Git
 .git/
 .gitignore
-n8n_workflows/
+
+# Python Caches
+__pycache__/
+*.pyc
+*.py[cod]
+
+# App Data & Local Caches
+# (Prevent baking local state into the image)
+graph_cache.json
+chroma_db/
 history.db
+
+# Documentation & Workflows
+n8n_workflows/
 *.md
 !data/*.md
