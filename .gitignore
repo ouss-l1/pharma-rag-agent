@@ -6,6 +6,7 @@
 env/
 venv/
  
+ *.pyc 
 # Python
 __pycache__/
 *.py[cod]
@@ -27,3 +28,6 @@ chroma_db/
 .DS_Store
 Thumbs.db
 .idea/
+
+.git/
+.gitignore
