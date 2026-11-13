@@ -12,11 +12,13 @@ CACHE_DIR = Path(os.getenv("CACHE_DIR", BASE_DIR / "cache"))
 
 # LLM & Embedding Settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 _url = (os.getenv("OPENAI_BASE_URL") or "").strip().strip('"').strip("'")
 if _url and not _url.startswith(("http://", "https://")):
     _url = "https://" + _url
+    
 OPENAI_BASE_URL = _url or None
-CHAT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+CHAT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
 EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
 
@@ -35,7 +37,7 @@ SPLIT_METHOD = os.getenv("SPLIT_METHOD", "markdown")  # Options: 'markdown', 'to
 BM25_WEIGHT = 0.4
 DENSE_WEIGHT = 0.6
 
-# Knowledge graph build: number of parallel LLM calls (lower it if you get 429 errors)
+# Knowledge graph build: number of parallel LLM calls 
 GRAPH_CONCURRENCY = int(os.getenv("GRAPH_CONCURRENCY", "4"))
 
 # Agent Execution Limits

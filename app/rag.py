@@ -16,7 +16,6 @@ from langchain_text_splitters import (
     Language,
 )
 
-# Import standard d'EnsembleRetriever (paquet `langchain-classic` requis)
 from langchain_classic.retrievers.ensemble import EnsembleRetriever
 
 from app.config import (
@@ -133,7 +132,7 @@ class KnowledgeBase:
                 if store._collection.count() == len(chunks):
                     return store
         except Exception:
-            pass  # unreadable cache -> rebuild below
+            pass  
 
         shutil.rmtree(CHROMA_DIR, ignore_errors=True)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
